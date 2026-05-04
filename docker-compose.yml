@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bookshop_net
+
+  backend:
+    build:
+      context: ./book-shop
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - static_files:/app/staticfiles
+    depends_on:
+      - db
+    networks:
+      - bookshop_net
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn book_shop.wsgi:application --bind 0.0.0.0:8000"
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_files:/app/staticfiles:ro
+    depends_on:
+      - backend
+    networks:
+      - bookshop_net
+
+volumes:
+  postgres_data:
+  static_files:
+
+networks:
+  bookshop_net:
+    driver: bridge
