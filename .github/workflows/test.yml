@@ -1,4 +1,4 @@
-name: Test — Image-First Pipeline
+name: Test — Artifact-First Pipeline
 
 on:
   push:
@@ -41,15 +41,15 @@ jobs:
         run: |
           python manage.py collectstatic --noinput
 
-      # Build a FRESH artifact — intentionally does NOT use the artifacts/ folder
-      # that dev committed. This proves the build is reproducible from source.
-      - name: Build fresh artifact
+      - name: Build artifact
         run: |
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:8}"
-          ARTIFACT_NAME="app-test-${SHORT_SHA}.tar.gz"
+          ARTIFACT_NAME="app-${SHORT_SHA}.tar.gz"
 
-          tar -czf "/tmp/${ARTIFACT_NAME}" \
+          mkdir -p ../artifacts
+
+          tar -czf "../artifacts/${ARTIFACT_NAME}" \
             --exclude='.git' \
             --exclude='../artifacts' \
             --exclude='__pycache__' \
@@ -58,12 +58,26 @@ jobs:
             --exclude='db.sqlite3' \
             .
 
-          # Copy to current dir so docker build context can reach it
-          cp "/tmp/${ARTIFACT_NAME}" "./${ARTIFACT_NAME}"
-
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
-          ls -lh "${ARTIFACT_NAME}"
+          ls -lh "../artifacts/${ARTIFACT_NAME}"
+
+      - name: Commit artifact to repo
+        working-directory: .
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
+          git add "artifacts/${{ env.ARTIFACT_NAME }}"
+
+          if git diff --staged --quiet; then
+            echo "Nothing to commit — artifact already exists"
+          else
+            git commit -m "ci: add artifact ${{ env.ARTIFACT_NAME }} [skip ci]"
+            git pull --rebase origin test
+            git push origin test
+          fi
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -71,27 +85,28 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build Docker image from fresh artifact
+      - name: Build Docker image from artifact
+        working-directory: .
         run: |
           IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:test-${{ env.SHORT_SHA }}"
 
           docker build \
-            --build-arg ARTIFACT="${{ env.ARTIFACT_NAME }}" \
+            --build-arg ARTIFACT="artifacts/${{ env.ARTIFACT_NAME }}" \
             -t "${IMAGE_TAG}" \
-            .
+            book-shop/
 
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
       - name: Push image to Docker Hub
+        working-directory: .
         run: |
           docker push "${{ env.IMAGE_TAG }}"
-          echo "Pushed: ${{ env.IMAGE_TAG }}"
 
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ vars.EC2_HOST }}
-          username: ubuntu
+          username: ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             docker pull "${{ env.IMAGE_TAG }}"
