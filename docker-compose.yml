@@ -4,50 +4,72 @@ services:
 
   db:
     image: postgres:15
-    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     networks:
-      - bookshop_net
+      - bookshop_network
+    restart: unless-stopped
 
   backend:
-    build:
-      context: ./book-shop
-    restart: unless-stopped
-    env_file:
-      - .env
+    image: ${IMAGE}
+    environment:
+      SECRET_KEY: ${SECRET_KEY}
+      DEBUG: "False"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - static_files:/app/staticfiles
+      - static_volume:/app/staticfiles
     depends_on:
       - db
-    networks:
-      - bookshop_net
     command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py collectstatic --noinput &&
-             gunicorn book_shop.wsgi:application --bind 0.0.0.0:8000"
+      sh -c "
+      echo 'Waiting for PostgreSQL...'
+      until python -c \"
+import sys, os
+import psycopg2
+try:
+    psycopg2.connect(
+        dbname=os.environ.get('POSTGRES_DB'),
+        user=os.environ.get('POSTGRES_USER'),
+        password=os.environ.get('POSTGRES_PASSWORD'),
+        host='db'
+    )
+    sys.exit(0)
+except:
+    sys.exit(1)
+        \"; do
+          sleep 2
+        done
+        python manage.py migrate --noinput
+        gunicorn book_shop.wsgi:application --bind 0.0.0.0:8000 --workers 2
+      "
+    networks:
+      - bookshop_network
+    restart: unless-stopped
 
   nginx:
-    image: nginx:alpine
-    restart: unless-stopped
+    image: nginx:1.25-alpine
     ports:
-      - "80:80"
+      - "${HOST_PORT:-80}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - static_files:/app/staticfiles:ro
+      - static_volume:/staticfiles:ro
     depends_on:
       - backend
     networks:
-      - bookshop_net
+      - bookshop_network
+    restart: unless-stopped
 
 volumes:
   postgres_data:
-  static_files:
+  static_volume:
 
 networks:
-  bookshop_net:
+  bookshop_network:
     driver: bridge
