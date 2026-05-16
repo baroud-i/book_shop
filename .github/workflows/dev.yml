@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r book_shop/requirements.txt
 
       # ── STEP 4: Collect static files ──────────────────────────────────────
       - name: Collect static files
@@ -35,7 +35,7 @@ jobs:
           DEBUG: "True"
           DATABASE_URL: sqlite:///tmp/ci.db
         run: |
-          python manage.py collectstatic --noinput
+          python book_shop/manage.py collectstatic --noinput
 
       # ── STEP 5: Build the artifact ────────────────────────────────────────
       - name: Build artifact
