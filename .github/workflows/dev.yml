@@ -71,7 +71,6 @@ jobs:
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           # Tell git to use the GITHUB_TOKEN for authentication when pushing.
           # This replaces the https URL with one that includes the token.
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
@@ -82,6 +81,7 @@ jobs:
             echo "Nothing to commit — artifact already exists"
           else
             git commit -m "ci: add artifact ${{ env.ARTIFACT_NAME }} [skip ci]"
+            git pull --rebase origin dev
             git push origin dev
           fi
 
