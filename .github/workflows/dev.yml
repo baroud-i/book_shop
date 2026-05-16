@@ -1,100 +1,56 @@
-# .github/workflows/dev.yml
-#
-# ══════════════════════════════════════════════════════════════
-# DEV PIPELINE — Artifact-First
-# ══════════════════════════════════════════════════════════════
-#
-# PHILOSOPHY: "Package it first, then build the image from the package."
-# The artifact (app-<sha>.tar.gz) is the unit of truth.
-# The Docker image is built FROM that artifact — not from raw source code.
-#
-# STEPS:
-#   1. Checkout code
-#   2. Build the artifact (zip up source + static files + frozen deps)
-#   3. Commit artifact to artifacts/ folder on the dev branch
-#   4. Build Docker image FROM the artifact
-#   5. Push image to Docker Hub tagged as dev-<sha>
-#   6. SSH into EC2 and deploy
-#
-# AUTOMATIC FAILURE conditions (grader checks):
-#   - Dockerfile builds from source instead of artifact → FAIL
-#   - artifacts/ folder has only one file (overwriting) → FAIL
-
 name: Dev — Artifact-First Pipeline
 
-# ── TRIGGER ─────────────────────────────────────────────────────────────────
-# This workflow runs automatically every time someone pushes to the dev branch.
 on:
   push:
     branches: [ dev ]
 
 jobs:
   build-and-deploy:
-    # Use GitHub's Ubuntu runner — a fresh virtual machine for each run
     runs-on: ubuntu-latest
 
     steps:
 
-      # ── STEP 1: Checkout ──────────────────────────────────────────────────
-      # Download the code from the dev branch onto the runner machine.
-      # fetch-depth: 0 gets the full git history (needed to push back to repo).
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── STEP 2: Set up Python ────────────────────────────────────────────
-      # Install Python 3.11 on the runner so we can run pip and manage.py.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # ── STEP 3: Install dependencies ──────────────────────────────────────
-      # Install all Python packages into a virtual environment on the runner.
-      # This is how we collect static files — Django needs to run to do that.
+      # Debug step — prints the folder structure so you can see exactly where things are
+      - name: Show repo structure
+        run: |
+          echo "=== Root of repo ==="
+          ls -la
+          echo "=== Looking for manage.py ==="
+          find . -name "manage.py" 2>/dev/null
+          echo "=== Looking for requirements.txt ==="
+          find . -name "requirements.txt" 2>/dev/null
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── STEP 4: Collect static files ──────────────────────────────────────
-      # Run Django's collectstatic — gathers all CSS/JS/images into staticfiles/
-      # We need a dummy SECRET_KEY and database so Django doesn't crash.
-      # We use SQLite here just for the static file collection step.
       - name: Collect static files
         env:
           SECRET_KEY: dummy-secret-key-for-ci-only
           DEBUG: "True"
-          # Use SQLite for this step — we just need collectstatic to work
-          DATABASE_URL: sqlite:///tmp/ci.db
+          DJANGO_SETTINGS_MODULE: book_shop.settings
         run: |
           python manage.py collectstatic --noinput
 
-      # ── STEP 5: Build the artifact ────────────────────────────────────────
-      # This is the CORE of the artifact-first philosophy.
-      # We create a .tar.gz archive that contains:
-      #   - All Python source code (manage.py, book_shop/, etc.)
-      #   - The collected staticfiles/
-      #   - requirements.txt (frozen list of exact package versions)
-      #
-      # github.sha is the unique commit hash, e.g. "a3f8c12d..."
-      # We use the first 8 characters to make the filename readable.
-      # IMPORTANT: every build gets its OWN file — never overwrite.
       - name: Build artifact
         run: |
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:8}"
           ARTIFACT_NAME="app-${SHORT_SHA}.tar.gz"
 
-          # Create the artifacts/ directory if it doesn't exist yet
           mkdir -p artifacts
 
-          # Create the tar.gz — include source and staticfiles
-          # --exclude='.git' → don't include git history in the artifact
-          # --exclude='artifacts' → don't include old artifacts (would grow forever)
-          # --exclude='__pycache__' → no Python cache files
-          # --exclude='*.pyc' → no compiled bytecode
           tar -czf "artifacts/${ARTIFACT_NAME}" \
             --exclude='.git' \
             --exclude='artifacts' \
@@ -109,47 +65,24 @@ jobs:
           echo "Built artifact: artifacts/${ARTIFACT_NAME}"
           ls -lh "artifacts/${ARTIFACT_NAME}"
 
-      # ── STEP 6: Commit artifact back to the repo ──────────────────────────
-      # This is what makes dev unique: the artifact lives in the repo.
-      # Every build adds a NEW file — the artifacts/ folder is an audit trail.
-      # The grader checks that old files are NOT overwritten.
-      #
-      # We use git directly to add and commit just the new artifact file.
       - name: Commit artifact to repo
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-
-          # Stage only the new artifact file
           git add "artifacts/${{ env.ARTIFACT_NAME }}"
-
-          # Check if there's actually something to commit
           if git diff --staged --quiet; then
-            echo "Nothing to commit — artifact already exists"
+            echo "Nothing to commit"
           else
             git commit -m "ci: add artifact ${{ env.ARTIFACT_NAME }} [skip ci]"
-            # [skip ci] in the commit message prevents this commit from
-            # triggering ANOTHER pipeline run (infinite loop prevention)
             git push origin dev
           fi
 
-      # ── STEP 7: Log in to Docker Hub ──────────────────────────────────────
-      # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are the Secrets you configured
-      # in GitHub → Settings → Secrets and variables → Actions.
-      # Never hardcode passwords — always use secrets!
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ── STEP 8: Build Docker image FROM the artifact ──────────────────────
-      # CRITICAL: notice we pass --build-arg ARTIFACT=...
-      # The Dockerfile uses this ARG to know which .tar.gz to copy and extract.
-      # This proves the image was built from the artifact, not from raw source.
-      #
-      # Image tag format: username/book_shop:dev-abc12345
-      # This makes it clear which images are from dev and which commit.
       - name: Build Docker image from artifact
         run: |
           IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:dev-${{ env.SHORT_SHA }}"
@@ -160,47 +93,24 @@ jobs:
             .
 
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
-          echo "Built image: ${IMAGE_TAG}"
 
-      # ── STEP 9: Push image to Docker Hub ──────────────────────────────────
-      # Upload the image to Docker Hub so EC2 can pull it.
-      # Docker Hub is like GitHub but for Docker images.
       - name: Push image to Docker Hub
         run: |
           docker push "${{ env.IMAGE_TAG }}"
 
-      # ── STEP 10: Deploy to EC2 ────────────────────────────────────────────
-      # SSH into the EC2 server and run docker compose.
-      # appleboy/ssh-action is the most popular GitHub Action for SSH.
-      # It takes your private key (from Secrets) and runs commands on EC2.
-      #
-      # EC2_HOST is the server's IP address (from Variables).
-      # EC2_SSH_KEY is your .pem file content (from Secrets).
-      #
-      # On EC2 we:
-      #   1. Pull the new image from Docker Hub
-      #   2. Stop the old dev deployment
-      #   3. Start the new one
-      #
-      # -p dev → compose project name. Keeps dev containers separate from test/prod.
-      # HOST_PORT=8080 → dev runs on port 8080, not 80 (prod gets port 80)
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ vars.EC2_HOST }}
-          username: ec2-user
+          username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Pull the latest image
             docker pull "${{ env.IMAGE_TAG }}"
 
-            # Navigate to the deployment folder (create if first time)
             mkdir -p ~/deployments/dev
             cd ~/deployments/dev
 
-            # Write the .env file for this deployment
-            # (The .env file lives on EC2, not in the repo — secrets stay secret)
-            cat > .env << 'EOF'
+            cat > .env << EOF
             IMAGE=${{ env.IMAGE_TAG }}
             HOST_PORT=8080
             SECRET_KEY=${{ secrets.SECRET_KEY }}
@@ -210,12 +120,7 @@ jobs:
             ALLOWED_HOSTS=${{ vars.EC2_HOST }},localhost
             EOF
 
-            # Copy docker-compose.yml from repo to server
-            # (In a real pipeline this is already there or we copy it via SCP)
-
-            # Stop the old dev containers (if running), start new ones
-            # -p dev sets the compose project name → container names like dev-backend-1
             docker compose -p dev down --remove-orphans
             docker compose -p dev up -d
 
-            echo "Dev deployment complete — visit http://${{ vars.EC2_HOST }}:8080"
+            echo "Dev deployment done — http://${{ vars.EC2_HOST }}:8080"
