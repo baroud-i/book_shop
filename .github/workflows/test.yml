@@ -4,39 +4,46 @@ on:
   push:
     branches: [ test ]
 
+permissions:
+  contents: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: book-shop
+
     steps:
 
-      # ── STEP 1: Checkout ──────────────────────────────────────────────────
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── STEP 2: Set up Python ────────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # ── STEP 3: Install dependencies ──────────────────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── STEP 4: Collect static files ──────────────────────────────────────
       - name: Collect static files
         env:
           SECRET_KEY: dummy-secret-key-for-ci-only
           DEBUG: "True"
-          DATABASE_URL: sqlite:///tmp/ci.db
+          DJANGO_SETTINGS_MODULE: book_shop.settings
         run: |
           python manage.py collectstatic --noinput
 
-      # ── STEP 5: Build a FRESH artifact ────────────────────────────────────
-      - name: Build fresh artifact (not reusing dev artifact)
+      # Build a FRESH artifact — intentionally does NOT use the artifacts/ folder
+      # that dev committed. This proves the build is reproducible from source.
+      - name: Build fresh artifact
         run: |
           SHA="${{ github.sha }}"
           SHORT_SHA="${SHA:0:8}"
@@ -44,28 +51,26 @@ jobs:
 
           tar -czf "/tmp/${ARTIFACT_NAME}" \
             --exclude='.git' \
-            --exclude='artifacts' \
+            --exclude='../artifacts' \
             --exclude='__pycache__' \
             --exclude='*.pyc' \
             --exclude='.env' \
             --exclude='db.sqlite3' \
             .
 
+          # Copy to current dir so docker build context can reach it
           cp "/tmp/${ARTIFACT_NAME}" "./${ARTIFACT_NAME}"
 
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
-          echo "Built fresh artifact: ${ARTIFACT_NAME}"
           ls -lh "${ARTIFACT_NAME}"
 
-      # ── STEP 6: Log in to Docker Hub ──────────────────────────────────────
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ── STEP 7: Build Docker image from the fresh artifact ────────────────
       - name: Build Docker image from fresh artifact
         run: |
           IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:test-${{ env.SHORT_SHA }}"
@@ -77,18 +82,16 @@ jobs:
 
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
-      # ── STEP 8: Push to Docker Hub ────────────────────────────────────────
       - name: Push image to Docker Hub
         run: |
           docker push "${{ env.IMAGE_TAG }}"
           echo "Pushed: ${{ env.IMAGE_TAG }}"
 
-      # ── STEP 9: Deploy to EC2 ────────────────────────────────────────────
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ vars.EC2_HOST }}
-          username: ec2-user
+          username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             docker pull "${{ env.IMAGE_TAG }}"
@@ -96,7 +99,7 @@ jobs:
             mkdir -p ~/deployments/test
             cd ~/deployments/test
 
-            cat > .env << 'EOF'
+            cat > .env << EOF
             IMAGE=${{ env.IMAGE_TAG }}
             HOST_PORT=8081
             SECRET_KEY=${{ secrets.SECRET_KEY }}
@@ -109,4 +112,4 @@ jobs:
             docker compose -p test down --remove-orphans
             docker compose -p test up -d
 
-            echo "Test deployment complete — visit http://${{ vars.EC2_HOST }}:8081"
+            echo "Test deployment done — http://${{ vars.EC2_HOST }}:8081"
