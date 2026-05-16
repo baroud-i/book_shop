@@ -69,7 +69,7 @@ jobs:
           # Use SQLite for this step — we just need collectstatic to work
           DATABASE_URL: sqlite:///tmp/ci.db
         run: |
-          python book_shop/manage.py collectstatic --noinput
+          python manage.py collectstatic --noinput
 
       # ── STEP 5: Build the artifact ────────────────────────────────────────
       # This is the CORE of the artifact-first philosophy.
