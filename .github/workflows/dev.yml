@@ -4,14 +4,17 @@ on:
   push:
     branches: [ dev ]
 
+# This tells GitHub Actions: this workflow needs to read AND write to the repo.
+# Without this, the bot can only read — it can't push the artifact back.
+permissions:
+  contents: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     defaults:
       run:
-        # Every "run:" step executes inside this subfolder automatically.
-        # Change "book-shop" here if your folder has a different name.
         working-directory: book-shop
 
     steps:
@@ -20,17 +23,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      # This prints your structure so you can confirm paths are correct.
-      - name: Show repo structure
-        working-directory: .
-        run: |
-          echo "=== Repo root ==="
-          ls -la
-          echo "=== Looking for manage.py ==="
-          find . -name "manage.py" 2>/dev/null
-          echo "=== Looking for requirements.txt ==="
-          find . -name "requirements.txt" 2>/dev/null
+          # Use the built-in GITHUB_TOKEN for authentication.
+          # This token automatically has write access when you enable it above.
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,7 +51,6 @@ jobs:
           SHORT_SHA="${SHA:0:8}"
           ARTIFACT_NAME="app-${SHORT_SHA}.tar.gz"
 
-          # artifacts/ folder lives at the repo root, one level up from book-shop/
           mkdir -p ../artifacts
 
           tar -czf "../artifacts/${ARTIFACT_NAME}" \
@@ -70,17 +64,22 @@ jobs:
 
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
-          echo "Built artifact: artifacts/${ARTIFACT_NAME}"
           ls -lh "../artifacts/${ARTIFACT_NAME}"
 
       - name: Commit artifact to repo
         working-directory: .
         run: |
           git config user.name "GitHub Actions Bot"
-          git config user.email "actions@github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Tell git to use the GITHUB_TOKEN for authentication when pushing.
+          # This replaces the https URL with one that includes the token.
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+
           git add "artifacts/${{ env.ARTIFACT_NAME }}"
+
           if git diff --staged --quiet; then
-            echo "Nothing to commit"
+            echo "Nothing to commit — artifact already exists"
           else
             git commit -m "ci: add artifact ${{ env.ARTIFACT_NAME }} [skip ci]"
             git push origin dev
