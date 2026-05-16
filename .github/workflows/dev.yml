@@ -8,6 +8,12 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        # Every "run:" step executes inside this subfolder automatically.
+        # Change "book-shop" here if your folder has a different name.
+        working-directory: book-shop
+
     steps:
 
       - name: Checkout code
@@ -15,20 +21,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # Debug step — prints the folder structure so you can see exactly where things are
+      # This prints your structure so you can confirm paths are correct.
       - name: Show repo structure
+        working-directory: .
         run: |
-          echo "=== Root of repo ==="
+          echo "=== Repo root ==="
           ls -la
           echo "=== Looking for manage.py ==="
           find . -name "manage.py" 2>/dev/null
           echo "=== Looking for requirements.txt ==="
           find . -name "requirements.txt" 2>/dev/null
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
@@ -49,11 +56,12 @@ jobs:
           SHORT_SHA="${SHA:0:8}"
           ARTIFACT_NAME="app-${SHORT_SHA}.tar.gz"
 
-          mkdir -p artifacts
+          # artifacts/ folder lives at the repo root, one level up from book-shop/
+          mkdir -p ../artifacts
 
-          tar -czf "artifacts/${ARTIFACT_NAME}" \
+          tar -czf "../artifacts/${ARTIFACT_NAME}" \
             --exclude='.git' \
-            --exclude='artifacts' \
+            --exclude='../artifacts' \
             --exclude='__pycache__' \
             --exclude='*.pyc' \
             --exclude='.env' \
@@ -63,9 +71,10 @@ jobs:
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
           echo "Built artifact: artifacts/${ARTIFACT_NAME}"
-          ls -lh "artifacts/${ARTIFACT_NAME}"
+          ls -lh "../artifacts/${ARTIFACT_NAME}"
 
       - name: Commit artifact to repo
+        working-directory: .
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
@@ -84,17 +93,19 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build Docker image from artifact
+        working-directory: .
         run: |
           IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:dev-${{ env.SHORT_SHA }}"
 
           docker build \
             --build-arg ARTIFACT="artifacts/${{ env.ARTIFACT_NAME }}" \
             -t "${IMAGE_TAG}" \
-            .
+            book-shop/
 
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
       - name: Push image to Docker Hub
+        working-directory: .
         run: |
           docker push "${{ env.IMAGE_TAG }}"
 
