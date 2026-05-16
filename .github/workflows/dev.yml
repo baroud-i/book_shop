@@ -29,13 +29,13 @@ jobs:
           pip install -r requirements.txt
 
       # ── STEP 4: Collect static files ──────────────────────────────────────
-      - name: Collect static files
+     - name: Collect static files
         env:
           SECRET_KEY: dummy-secret-key-for-ci-only
           DEBUG: "True"
           DATABASE_URL: sqlite:///tmp/ci.db
         run: |
-          python book_shop/manage.py collectstatic --noinput
+          python manage.py collectstatic --noinput
 
       # ── STEP 5: Build the artifact ────────────────────────────────────────
       - name: Build artifact
